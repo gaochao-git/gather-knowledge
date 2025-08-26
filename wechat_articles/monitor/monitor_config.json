@@ -1,0 +1,17 @@
+{
+  "测试账号": {
+    "account_name": "测试账号",
+    "check_interval_minutes": 60,
+    "max_articles_per_check": 10,
+    "export_formats": [
+      "html",
+      "pdf"
+    ],
+    "enabled": true,
+    "created_at": "2025-08-26T10:14:21.119170",
+    "last_check_time": null,
+    "total_collected": 0,
+    "error_count": 0,
+    "last_error": null
+  }
+}
