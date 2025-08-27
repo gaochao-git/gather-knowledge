@@ -95,3 +95,4 @@ Thumbs.db
 # Build files
 dist/
 build/
+wetchat_articles/storage/
