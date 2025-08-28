@@ -99,7 +99,7 @@ class WechatArticleCollector:
                 export_stats['md'] = len(list(account_dir.glob('*.md')))
             elif fmt == 'pdf':
                 export_stats['pdf'] = len(list(account_dir.glob('*.pdf')))
-            elif fmt == 'docx':
+            elif fmt == 'docx' or fmt == 'word':
                 export_stats['docx'] = len(list(account_dir.glob('*.docx')))
         
         return {
@@ -172,8 +172,10 @@ class WechatArticleCollector:
         """将文章保存为多种格式"""
         try:
             filename_base = self._generate_filename(article)
+            logger.info(f"保存文章格式: {export_formats}, 文件名: {filename_base}")
             
             for fmt in export_formats:
+                logger.info(f"处理格式: {fmt}")
                 if fmt == 'json':
                     self._save_as_json(article, account_dir, filename_base)
                 elif fmt == 'html':
@@ -184,7 +186,7 @@ class WechatArticleCollector:
                     self._save_as_markdown(article, account_dir, filename_base)
                 elif fmt == 'pdf':
                     self._save_as_pdf(article, account_dir, filename_base)
-                elif fmt == 'docx':
+                elif fmt == 'docx' or fmt == 'word':
                     self._save_as_docx(article, account_dir, filename_base)
             
             return True
@@ -480,40 +482,49 @@ class WechatArticleCollector:
                     if img_src.startswith('images/'):
                         img_path = self.base_output_dir / img_src
                         if img_path.exists() and self._validate_image_file(img_path):
-                            try:
-                                img = Image(str(img_path))
-                                # 改进的图片缩放逻辑
-                                page_width, page_height = A4
-                                max_width = page_width - 4*inch  # 增加页边距
-                                max_height = page_height - 6*inch  # 增加上下边距
-                                
-                                # 计算缩放比例
-                                width_scale = max_width / img.drawWidth if img.drawWidth > max_width else 1
-                                height_scale = max_height / img.drawHeight if img.drawHeight > max_height else 1
-                                scale = min(width_scale, height_scale, 0.8)  # 最大缩放80%
-                                
-                                # 应用缩放，确保最小尺寸
-                                img.drawWidth = max(img.drawWidth * scale, inch)
-                                img.drawHeight = max(img.drawHeight * scale, 0.5*inch)
-                                
-                                # 确保尺寸不超过限制
-                                if img.drawWidth > max_width:
-                                    scale_fix = max_width / img.drawWidth
-                                    img.drawWidth = max_width
-                                    img.drawHeight = img.drawHeight * scale_fix
-                                
-                                if img.drawHeight > max_height:
-                                    scale_fix = max_height / img.drawHeight
-                                    img.drawHeight = max_height
-                                    img.drawWidth = img.drawWidth * scale_fix
-                                
-                                story.append(img)
-                                story.append(Spacer(1, 12))
-                                logger.debug(f"PDF添加图片: {img_src} ({img.drawWidth:.1f}x{img.drawHeight:.1f})")
-                            except Exception as e:
-                                logger.warning(f"PDF图片处理失败 {img_src}: {e}")
+                            # 转换图片格式以确保PDF兼容性
+                            compatible_img_path = self._convert_image_for_office(img_path)
+                            if compatible_img_path:
+                                try:
+                                    img = Image(str(compatible_img_path))
+                                    # 改进的图片缩放逻辑
+                                    page_width, page_height = A4
+                                    max_width = page_width - 4*inch  # 增加页边距
+                                    max_height = page_height - 6*inch  # 增加上下边距
+                                    
+                                    # 计算缩放比例
+                                    width_scale = max_width / img.drawWidth if img.drawWidth > max_width else 1
+                                    height_scale = max_height / img.drawHeight if img.drawHeight > max_height else 1
+                                    scale = min(width_scale, height_scale, 0.8)  # 最大缩放80%
+                                    
+                                    # 应用缩放，确保最小尺寸
+                                    img.drawWidth = max(img.drawWidth * scale, inch)
+                                    img.drawHeight = max(img.drawHeight * scale, 0.5*inch)
+                                    
+                                    # 确保尺寸不超过限制
+                                    if img.drawWidth > max_width:
+                                        scale_fix = max_width / img.drawWidth
+                                        img.drawWidth = max_width
+                                        img.drawHeight = img.drawHeight * scale_fix
+                                    
+                                    if img.drawHeight > max_height:
+                                        scale_fix = max_height / img.drawHeight
+                                        img.drawHeight = max_height
+                                        img.drawWidth = img.drawWidth * scale_fix
+                                    
+                                    story.append(img)
+                                    story.append(Spacer(1, 12))
+                                    logger.info(f"PDF添加图片: {img_src} ({img.drawWidth:.1f}x{img.drawHeight:.1f})")
+                                except Exception as e:
+                                    logger.warning(f"PDF图片处理失败 {img_src}: {e}")
+                                    # 添加占位文本
+                                    story.append(Paragraph(f"[图片处理失败: {img_src}]", content_style))
+                            else:
+                                logger.warning(f"PDF图片转换失败: {img_src}")
+                                story.append(Paragraph(f"[图片转换失败: {img_src}]", content_style))
                         else:
                             logger.warning(f"图片文件不存在或无效: {img_path}")
+                            story.append(Paragraph(f"[图片文件缺失: {img_src}]", content_style))
                 
                 elif element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                     # 处理标题
@@ -532,35 +543,42 @@ class WechatArticleCollector:
                                 if img_src.startswith('images/'):
                                     img_path = self.base_output_dir / img_src
                                     if img_path.exists() and self._validate_image_file(img_path):
-                                        try:
-                                            img = Image(str(img_path))
-                                            # 相同的缩放逻辑
-                                            page_width, page_height = A4
-                                            max_width = page_width - 4*inch
-                                            max_height = page_height - 6*inch
-                                            
-                                            width_scale = max_width / img.drawWidth if img.drawWidth > max_width else 1
-                                            height_scale = max_height / img.drawHeight if img.drawHeight > max_height else 1
-                                            scale = min(width_scale, height_scale, 0.8)
-                                            
-                                            img.drawWidth = max(img.drawWidth * scale, inch)
-                                            img.drawHeight = max(img.drawHeight * scale, 0.5*inch)
-                                            
-                                            if img.drawWidth > max_width:
-                                                scale_fix = max_width / img.drawWidth
-                                                img.drawWidth = max_width
-                                                img.drawHeight = img.drawHeight * scale_fix
-                                            
-                                            if img.drawHeight > max_height:
-                                                scale_fix = max_height / img.drawHeight
-                                                img.drawHeight = max_height
-                                                img.drawWidth = img.drawWidth * scale_fix
-                                            
-                                            story.append(img)
-                                            story.append(Spacer(1, 12))
-                                            logger.debug(f"PDF添加段落图片: {img_src} ({img.drawWidth:.1f}x{img.drawHeight:.1f})")
-                                        except Exception as e:
-                                            logger.warning(f"PDF段落图片处理失败 {img_src}: {e}")
+                                        # 转换图片格式以确保PDF兼容性
+                                        compatible_img_path = self._convert_image_for_office(img_path)
+                                        if compatible_img_path:
+                                            try:
+                                                img = Image(str(compatible_img_path))
+                                                # 相同的缩放逻辑
+                                                page_width, page_height = A4
+                                                max_width = page_width - 4*inch
+                                                max_height = page_height - 6*inch
+                                                
+                                                width_scale = max_width / img.drawWidth if img.drawWidth > max_width else 1
+                                                height_scale = max_height / img.drawHeight if img.drawHeight > max_height else 1
+                                                scale = min(width_scale, height_scale, 0.8)
+                                                
+                                                img.drawWidth = max(img.drawWidth * scale, inch)
+                                                img.drawHeight = max(img.drawHeight * scale, 0.5*inch)
+                                                
+                                                if img.drawWidth > max_width:
+                                                    scale_fix = max_width / img.drawWidth
+                                                    img.drawWidth = max_width
+                                                    img.drawHeight = img.drawHeight * scale_fix
+                                                
+                                                if img.drawHeight > max_height:
+                                                    scale_fix = max_height / img.drawHeight
+                                                    img.drawHeight = max_height
+                                                    img.drawWidth = img.drawWidth * scale_fix
+                                                
+                                                story.append(img)
+                                                story.append(Spacer(1, 12))
+                                                logger.info(f"PDF添加段落图片: {img_src} ({img.drawWidth:.1f}x{img.drawHeight:.1f})")
+                                            except Exception as e:
+                                                logger.warning(f"PDF段落图片处理失败 {img_src}: {e}")
+                                                story.append(Paragraph(f"[图片处理失败: {img_src}]", content_style))
+                                        else:
+                                            logger.warning(f"PDF段落图片转换失败: {img_src}")
+                                            story.append(Paragraph(f"[图片转换失败: {img_src}]", content_style))
                             elif hasattr(child, 'get_text'):
                                 text = child.get_text(strip=True)
                                 if text:
@@ -580,6 +598,7 @@ class WechatArticleCollector:
     def _save_as_docx(self, article, account_dir, filename_base):
         """保存为Word格式 - 确保能够正常生成包含图片的Word文档"""
         docx_path = account_dir / f"{filename_base}.docx"
+        logger.info(f"开始生成Word文档: {docx_path}")
         
         try:
             from docx import Document
@@ -659,8 +678,15 @@ class WechatArticleCollector:
                     doc.add_paragraph("文章内容为空或解析失败")
             
             # 保存文档
+            logger.info(f"准备保存Word文档到: {docx_path}")
             doc.save(str(docx_path))
-            logger.info(f"Word文档生成成功: {docx_path}")
+            
+            # 验证文件是否成功创建
+            if docx_path.exists():
+                file_size = docx_path.stat().st_size
+                logger.info(f"Word文档生成成功: {docx_path} (大小: {file_size} bytes)")
+            else:
+                logger.error(f"Word文档保存失败，文件未生成: {docx_path}")
             
         except ImportError as e:
             logger.warning(f"python-docx未安装: {e}")
@@ -687,43 +713,48 @@ class WechatArticleCollector:
                 if element.name == 'img':
                     # 处理图片
                     img_src = element.get('src', '')
+                    logger.debug(f"处理图片: {img_src}")
                     if img_src.startswith('images/'):
+                        # 修正图片路径计算
                         img_path = self.base_output_dir / img_src
+                        logger.debug(f"图片路径: {img_path}")
                         if img_path.exists() and self._validate_image_file(img_path):
-                            try:
-                                paragraph = doc.add_paragraph()
-                                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
-                                
-                                # 限制图片最大宽度，防止超出页面，根据图片实际大小调整
+                            # 转换图片格式以确保兼容性
+                            compatible_img_path = self._convert_image_for_office(img_path)
+                            if compatible_img_path:
                                 try:
-                                    from PIL import Image as PILImage
-                                    with PILImage.open(img_path) as pil_img:
-                                        width, height = pil_img.size
-                                        # 根据图片比例调整大小
-                                        if width > height:
-                                            # 横向图片
-                                            max_width = Inches(6.5)  
-                                        else:
-                                            # 纵向图片
-                                            max_width = Inches(4.5)
-                                        run.add_picture(str(img_path), width=max_width)
-                                except ImportError:
-                                    # 如果没有PIL，使用固定大小
-                                    max_width = Inches(5.5)
-                                    run.add_picture(str(img_path), width=max_width)
+                                    paragraph = doc.add_paragraph()
+                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                    run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+                                    
+                                    # 获取图片尺寸并插入
+                                    try:
+                                        from PIL import Image as PILImage
+                                        with PILImage.open(compatible_img_path) as pil_img:
+                                            width, height = pil_img.size
+                                            logger.debug(f"转换后图片尺寸: {width}x{height}")
+                                            
+                                            # 根据图片比例调整大小
+                                            if width > height:
+                                                max_width = Inches(6.5)  
+                                            else:
+                                                max_width = Inches(4.5)
+                                            run.add_picture(str(compatible_img_path), width=max_width)
+                                            logger.info(f"图片插入成功: {img_src}")
+                                    except Exception as e:
+                                        # 使用默认尺寸插入
+                                        max_width = Inches(5)
+                                        run.add_picture(str(compatible_img_path), width=max_width)
+                                        logger.info(f"图片插入成功(默认尺寸): {img_src}")
+                                    
+                                    processed_count += 1
                                 except Exception as e:
-                                    # 如果图片大小获取失败，使用默认大小
-                                    logger.debug(f"获取图片尺寸失败: {e}")
-                                    max_width = Inches(5)
-                                    run.add_picture(str(img_path), width=max_width)
-                                
-                                processed_count += 1
-                                logger.debug(f"Word添加图片: {img_src}")
-                            except Exception as e:
-                                logger.warning(f"Word图片处理失败 {img_src}: {e}")
-                                # 如果图片插入失败，添加占位文本
-                                doc.add_paragraph(f"[图片插入失败: {img_src}]")
+                                    logger.error(f"图片插入失败 {img_src}: {str(e)}")
+                                    doc.add_paragraph(f"[图片插入失败: {img_src}]")
+                                    processed_count += 1
+                            else:
+                                logger.warning(f"图片转换失败: {img_src}")
+                                doc.add_paragraph(f"[图片转换失败: {img_src}]")
                                 processed_count += 1
                         else:
                             logger.warning(f"图片文件不存在或无效: {img_path}")
@@ -743,54 +774,84 @@ class WechatArticleCollector:
                 else:
                     # 处理段落
                     if element.find('img'):
-                        # 包含图片的段落
+                        # 包含图片的段落 - 需要分别处理文本和图片
+                        paragraph_text_parts = []
+                        
                         for child in element.children:
                             if hasattr(child, 'name') and child.name == 'img':
+                                # 先添加之前的文本（如果有）
+                                if paragraph_text_parts:
+                                    text_content = ''.join(paragraph_text_parts).strip()
+                                    if text_content:
+                                        self._add_formatted_paragraph(doc, text_content, element)
+                                        processed_count += 1
+                                    paragraph_text_parts = []
+                                
+                                # 处理图片
                                 img_src = child.get('src', '')
+                                logger.debug(f"处理段落图片: {img_src}")
                                 if img_src.startswith('images/'):
                                     img_path = self.base_output_dir / img_src
+                                    logger.debug(f"段落图片路径: {img_path}")
                                     if img_path.exists() and self._validate_image_file(img_path):
-                                        try:
-                                            paragraph = doc.add_paragraph()
-                                            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                            run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
-                                            
-                                            # 同样的图片大小处理逻辑
+                                        # 转换图片格式以确保兼容性
+                                        compatible_img_path = self._convert_image_for_office(img_path)
+                                        if compatible_img_path:
                                             try:
-                                                from PIL import Image as PILImage
-                                                with PILImage.open(img_path) as pil_img:
-                                                    width, height = pil_img.size
-                                                    if width > height:
-                                                        max_width = Inches(6.5)
-                                                    else:
-                                                        max_width = Inches(4.5)
-                                                    run.add_picture(str(img_path), width=max_width)
-                                            except ImportError:
-                                                max_width = Inches(5.5)
-                                                run.add_picture(str(img_path), width=max_width)
-                                            except Exception:
-                                                max_width = Inches(5)
-                                                run.add_picture(str(img_path), width=max_width)
-                                            
-                                            processed_count += 1
-                                            logger.debug(f"Word添加段落图片: {img_src}")
-                                        except Exception as e:
-                                            logger.warning(f"Word段落图片处理失败 {img_src}: {e}")
-                                            doc.add_paragraph(f"[图片插入失败: {img_src}]")
+                                                paragraph = doc.add_paragraph()
+                                                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                                run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+                                                
+                                                # 获取图片尺寸并插入
+                                                try:
+                                                    from PIL import Image as PILImage
+                                                    with PILImage.open(compatible_img_path) as pil_img:
+                                                        width, height = pil_img.size
+                                                        logger.debug(f"段落转换后图片尺寸: {width}x{height}")
+                                                        
+                                                        if width > height:
+                                                            max_width = Inches(6.5)
+                                                        else:
+                                                            max_width = Inches(4.5)
+                                                        run.add_picture(str(compatible_img_path), width=max_width)
+                                                        logger.info(f"段落图片插入成功: {img_src}")
+                                                except Exception:
+                                                    # 使用默认尺寸插入
+                                                    max_width = Inches(5)
+                                                    run.add_picture(str(compatible_img_path), width=max_width)
+                                                    logger.info(f"段落图片插入成功(默认尺寸): {img_src}")
+                                                
+                                                processed_count += 1
+                                            except Exception as e:
+                                                logger.error(f"段落图片插入失败 {img_src}: {str(e)}")
+                                                doc.add_paragraph(f"[图片插入失败: {img_src}]")
+                                                processed_count += 1
+                                        else:
+                                            logger.warning(f"段落图片转换失败: {img_src}")
+                                            doc.add_paragraph(f"[图片转换失败: {img_src}]")
                                             processed_count += 1
                                     else:
+                                        logger.warning(f"段落图片文件不存在或无效: {img_path}")
                                         doc.add_paragraph(f"[图片文件缺失: {img_src}]")
                                         processed_count += 1
-                            elif hasattr(child, 'get_text'):
-                                text = child.get_text(strip=True)
-                                if text:
-                                    doc.add_paragraph(text)
-                                    processed_count += 1
+                            else:
+                                # 收集文本内容
+                                if hasattr(child, 'get_text'):
+                                    paragraph_text_parts.append(child.get_text())
+                                elif isinstance(child, str):
+                                    paragraph_text_parts.append(child)
+                        
+                        # 处理最后的文本部分
+                        if paragraph_text_parts:
+                            text_content = ''.join(paragraph_text_parts).strip()
+                            if text_content:
+                                self._add_formatted_paragraph(doc, text_content, element)
+                                processed_count += 1
                     else:
-                        # 纯文本段落
+                        # 纯文本段落 - 保留格式
                         text = element.get_text(strip=True)
                         if text:
-                            doc.add_paragraph(text)
+                            self._add_formatted_paragraph(doc, text, element)
                             processed_count += 1
                             
             except Exception as e:
@@ -799,6 +860,212 @@ class WechatArticleCollector:
         
         logger.info(f"Word文档处理了 {processed_count} 个元素")
         return processed_count
+        
+    def _convert_image_for_office(self, img_path):
+        """转换图片格式以确保与Office软件兼容"""
+        try:
+            from PIL import Image as PILImage
+            import io
+            
+            # 检查文件是否存在
+            if not img_path.exists():
+                logger.warning(f"图片文件不存在: {img_path}")
+                return None
+            
+            file_ext = img_path.suffix.lower()
+            
+            # SVG文件需要特殊处理
+            if file_ext == '.svg':
+                try:
+                    # 尝试使用cairosvg转换SVG
+                    try:
+                        import cairosvg
+                        png_path = img_path.with_suffix('.png')
+                        cairosvg.svg2png(url=str(img_path), write_to=str(png_path))
+                        logger.info(f"SVG转PNG成功: {png_path}")
+                        return png_path
+                    except ImportError:
+                        logger.debug("cairosvg未安装，尝试其他方法")
+                    
+                    # 备用方案：使用Pillow处理（如果支持）
+                    try:
+                        from PIL import Image as PILImage
+                        import subprocess
+                        
+                        # 尝试使用系统工具转换
+                        png_path = img_path.with_suffix('.png')
+                        # 创建一个简单的占位图片
+                        placeholder_img = PILImage.new('RGB', (200, 100), color='lightgray')
+                        placeholder_img.save(png_path)
+                        logger.warning(f"SVG转换失败，创建占位图片: {png_path}")
+                        return png_path
+                    except Exception as e:
+                        logger.warning(f"SVG处理完全失败: {e}")
+                        return None
+                        
+                except Exception as e:
+                    logger.warning(f"SVG转换失败: {e}")
+                    return None
+            
+            # 检查是否是WebP格式但扩展名错误
+            with open(img_path, 'rb') as f:
+                header = f.read(12)
+                
+            is_webp = header.startswith(b'RIFF') and b'WEBP' in header
+            
+            if is_webp or file_ext == '.webp':
+                try:
+                    with PILImage.open(img_path) as pil_img:
+                        # 转换WebP为PNG
+                        png_path = img_path.with_suffix('.png')
+                        
+                        # 如果有透明通道，保持RGBA模式，否则转为RGB
+                        if pil_img.mode in ('RGBA', 'LA'):
+                            pil_img.save(png_path, 'PNG')
+                        else:
+                            rgb_img = pil_img.convert('RGB')
+                            rgb_img.save(png_path, 'PNG')
+                        
+                        logger.info(f"WebP转PNG成功: {png_path}")
+                        return png_path
+                        
+                except Exception as e:
+                    logger.error(f"WebP转换失败: {e}")
+                    return None
+            
+            # 对于其他格式，检查PIL是否能打开
+            try:
+                with PILImage.open(img_path) as pil_img:
+                    # 如果能正常打开且格式兼容，直接返回
+                    if pil_img.format in ['JPEG', 'PNG', 'GIF', 'BMP']:
+                        logger.debug(f"图片格式兼容: {pil_img.format}")
+                        return img_path
+                    else:
+                        # 转换为PNG
+                        png_path = img_path.with_suffix('.png')
+                        if pil_img.mode in ('RGBA', 'LA'):
+                            pil_img.save(png_path, 'PNG')
+                        else:
+                            rgb_img = pil_img.convert('RGB')
+                            rgb_img.save(png_path, 'PNG')
+                        logger.info(f"图片转PNG成功: {png_path}")
+                        return png_path
+                        
+            except Exception as e:
+                logger.error(f"图片格式检查失败: {e}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"图片转换过程失败: {e}")
+            return None
+    
+    def _add_formatted_paragraph(self, doc, text_content, original_element):
+        """添加带格式的段落到Word文档"""
+        try:
+            from docx.shared import RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            
+            paragraph = doc.add_paragraph()
+            
+            # 检查原始元素中的格式化子元素
+            if hasattr(original_element, 'find_all'):
+                # 如果有格式化元素，按顺序处理
+                formatted_elements = original_element.find_all(['strong', 'b', 'em', 'i', 'span', 'font'])
+                if formatted_elements:
+                    self._process_formatted_text(paragraph, original_element)
+                else:
+                    # 简单文本
+                    paragraph.add_run(text_content)
+            else:
+                # 纯文本
+                paragraph.add_run(text_content)
+                
+            return paragraph
+            
+        except Exception as e:
+            logger.debug(f"格式化段落处理失败，使用纯文本: {e}")
+            # 回退到简单文本
+            return doc.add_paragraph(text_content)
+    
+    def _process_formatted_text(self, paragraph, element):
+        """处理带格式的文本元素"""
+        try:
+            from docx.shared import RGBColor
+            
+            for child in element.children:
+                if isinstance(child, str):
+                    # 纯文本节点
+                    if child.strip():
+                        paragraph.add_run(child)
+                elif hasattr(child, 'name'):
+                    text = child.get_text()
+                    if not text.strip():
+                        continue
+                        
+                    run = paragraph.add_run(text)
+                    
+                    # 处理加粗
+                    if child.name in ['strong', 'b']:
+                        run.bold = True
+                        logger.debug(f"应用加粗格式: {text[:20]}...")
+                    
+                    # 处理斜体
+                    elif child.name in ['em', 'i']:
+                        run.italic = True
+                        logger.debug(f"应用斜体格式: {text[:20]}...")
+                    
+                    # 处理span和font标签中的样式
+                    elif child.name in ['span', 'font']:
+                        style_attr = child.get('style', '')
+                        color_attr = child.get('color', '')
+                        
+                        # 检查颜色
+                        color = None
+                        if 'color:' in style_attr:
+                            # 从style属性中提取颜色
+                            import re
+                            color_match = re.search(r'color:\s*([^;]+)', style_attr)
+                            if color_match:
+                                color = color_match.group(1).strip()
+                        elif color_attr:
+                            color = color_attr
+                        
+                        if color:
+                            try:
+                                # 处理常见颜色格式
+                                if color.lower() == 'red' or color == '#ff0000' or color == '#FF0000':
+                                    run.font.color.rgb = RGBColor(255, 0, 0)
+                                    logger.debug(f"应用红色格式: {text[:20]}...")
+                                elif color.lower() == 'blue' or color == '#0000ff' or color == '#0000FF':
+                                    run.font.color.rgb = RGBColor(0, 0, 255)
+                                elif color.lower() == 'green' or color == '#00ff00' or color == '#00FF00':
+                                    run.font.color.rgb = RGBColor(0, 255, 0)
+                                elif color.startswith('#') and len(color) == 7:
+                                    # 十六进制颜色
+                                    r = int(color[1:3], 16)
+                                    g = int(color[3:5], 16)
+                                    b = int(color[5:7], 16)
+                                    run.font.color.rgb = RGBColor(r, g, b)
+                                    logger.debug(f"应用颜色格式 {color}: {text[:20]}...")
+                            except Exception as e:
+                                logger.debug(f"颜色处理失败: {e}")
+                        
+                        # 检查加粗
+                        if 'font-weight:' in style_attr and ('bold' in style_attr or '700' in style_attr):
+                            run.bold = True
+                            logger.debug(f"应用样式加粗: {text[:20]}...")
+                    
+                    # 递归处理嵌套的格式化元素
+                    if child.find_all(['strong', 'b', 'em', 'i', 'span', 'font']):
+                        # 如果还有嵌套的格式化元素，递归处理
+                        nested_paragraph = paragraph._element.getparent()
+                        self._process_formatted_text(paragraph, child)
+        
+        except Exception as e:
+            logger.debug(f"格式化文本处理失败: {e}")
+            # 回退到简单文本
+            paragraph.add_run(element.get_text())
+    
     
     def _get_articles_by_mp_api(self, account_name, max_articles=20):
         """使用微信公众平台API获取文章列表"""
@@ -1022,34 +1289,89 @@ class WechatArticleCollector:
             return content_div
     
     def _validate_image_file(self, img_path):
-        """验证图片文件是否有效"""
+        """验证图片文件是否有效 - 改进的验证逻辑"""
         try:
-            if not img_path.exists() or img_path.stat().st_size < 100:
+            if not img_path.exists():
                 return False
             
-            # 尝试用PIL验证图片
+            # 检查文件大小 - 降低最小大小要求
+            file_size = img_path.stat().st_size
+            if file_size < 50:  # 从100降到50字节
+                logger.debug(f"图片文件太小: {file_size} bytes")
+                return False
+            
+            # 检查文件扩展名，SVG文件特殊处理
+            file_ext = img_path.suffix.lower()
+            if file_ext == '.svg':
+                # SVG文件验证：检查是否包含SVG标签
+                try:
+                    with open(img_path, 'r', encoding='utf-8') as f:
+                        content = f.read(1000)  # 只读前1000字符
+                        if '<svg' in content.lower() or '<?xml' in content.lower():
+                            logger.debug("SVG文件验证成功")
+                            return True
+                        else:
+                            logger.debug("文件不包含SVG标签")
+                            return False
+                except Exception as e:
+                    logger.debug(f"SVG文件验证失败: {e}")
+                    # 如果读取失败但文件存在，可能是二进制SVG
+                    return file_size > 200
+            
+            # 优先使用PIL验证（更准确）- 也能检测实际格式
             try:
                 from PIL import Image
                 with Image.open(img_path) as img:
-                    img.verify()
-                return True
+                    # 尝试加载图片数据
+                    img.load()
+                    # 检查图片尺寸
+                    width, height = img.size
+                    if width > 0 and height > 0:
+                        logger.debug(f"PIL验证成功: {img.format} {width}x{height}")
+                        return True
+                    else:
+                        logger.debug(f"图片尺寸无效: {width}x{height}")
+                        return False
             except ImportError:
-                # 如果没有PIL，简单检查文件头
+                logger.debug("PIL未安装，使用文件头验证")
+            except Exception as e:
+                logger.debug(f"PIL验证失败: {e}")
+            
+            # 备用验证：检查文件头 - 增加WebP支持
+            try:
                 with open(img_path, 'rb') as f:
-                    header = f.read(10)
+                    header = f.read(16)  # 读取更多字节
+                    
                     # 检查常见图片格式的文件头
                     if (header.startswith(b'\xFF\xD8\xFF') or  # JPEG
                         header.startswith(b'\x89PNG\r\n\x1a\n') or  # PNG
                         header.startswith(b'GIF87a') or  # GIF87a
                         header.startswith(b'GIF89a') or  # GIF89a
-                        header.startswith(b'RIFF') and b'WEBP' in header):  # WEBP
+                        (header.startswith(b'RIFF') and b'WEBP' in header) or  # WEBP
+                        header.startswith(b'BM')):  # BMP
+                        logger.debug("文件头验证成功")
                         return True
+                
+                # 如果文件头验证失败，但文件不是很小，可能是格式不常见但有效
+                if file_size > 1000:  # 大于1KB的文件可能是有效图片
+                    logger.debug(f"文件头验证失败但文件较大({file_size}bytes)，可能是有效图片")
+                    return True
+                
+                logger.debug("文件头验证失败且文件较小")
                 return False
-            except Exception:
+                
+            except Exception as e:
+                logger.debug(f"文件头验证失败: {e}")
+                # 如果所有验证都失败，但文件存在且不为空，保守地认为有效
+                if file_size > 100:
+                    logger.debug("验证失败但文件不为空，保守认为有效")
+                    return True
                 return False
+                
         except Exception as e:
-            logger.debug(f"图片验证失败: {e}")
-            return False
+            logger.debug(f"图片验证异常: {e}")
+            # 异常情况下，如果文件存在就认为有效
+            return img_path.exists()
     
     def _generate_image_filename(self, img_url):
         """生成图片文件名"""
@@ -1059,10 +1381,14 @@ class WechatArticleCollector:
             
             if '.' in path:
                 ext = path.split('.')[-1].lower()
-                if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']:
+                if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg']:
                     ext = 'jpg'
             else:
-                ext = 'jpg'
+                # 检查URL参数中的格式信息
+                if 'wx_fmt=svg' in img_url.lower() or 'format=svg' in img_url.lower():
+                    ext = 'svg'
+                else:
+                    ext = 'jpg'
             
             img_hash = hashlib.md5(img_url.encode()).hexdigest()[:16]
             return f"img_{img_hash}.{ext}"
