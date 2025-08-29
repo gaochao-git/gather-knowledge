@@ -126,12 +126,6 @@ class WechatArticleCollector:
                 articles = self._get_articles_by_mp_api(account_name, start_date, end_date)
                 if articles:
                     logger.info(f"通过微信公众平台API获取到 {len(articles)} 篇文章")
-                    # 应用时间范围过滤
-                    if start_date or end_date:
-                        filtered_articles = self._filter_articles_by_date_range(articles, start_date, end_date)
-                        logger.info(f"时间范围过滤后剩余 {len(filtered_articles)} 篇文章")
-                        articles = filtered_articles
-                    
                     return self._process_articles_with_formats(articles, account_name, export_formats)
                 else:
                     logger.warning("微信公众平台API获取失败")
@@ -2108,7 +2102,7 @@ class WechatArticleCollector:
     
     
     def _get_articles_by_mp_api(self, account_name, start_date=None, end_date=None):
-        """使用微信公众平台API获取文章列表，支持翻页获取更多文章"""
+        """使用微信公众平台API获取文章列表，支持翻页获取更多文章，支持实时时间过滤"""
         import time
         
         try:
@@ -2120,9 +2114,37 @@ class WechatArticleCollector:
                 logger.warning("缺少fakeid")
                 return []
             
+            # 解析时间范围
+            start_timestamp = None
+            end_timestamp = None
+            
+            if start_date:
+                try:
+                    if len(start_date) == 8 and start_date.isdigit():
+                        start_dt = datetime.strptime(start_date, '%Y%m%d')
+                    else:
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                    start_timestamp = start_dt.timestamp()
+                    logger.info(f"开始时间过滤: {start_dt.strftime('%Y-%m-%d')}")
+                except ValueError as e:
+                    logger.warning(f"开始日期格式错误: {start_date}")
+            
+            if end_date:
+                try:
+                    if len(end_date) == 8 and end_date.isdigit():
+                        end_dt = datetime.strptime(end_date, '%Y%m%d')
+                    else:
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                    end_timestamp = end_dt.timestamp()
+                    logger.info(f"结束时间过滤: {end_dt.strftime('%Y-%m-%d')}")
+                except ValueError as e:
+                    logger.warning(f"结束日期格式错误: {end_date}")
+            
             all_articles = []
             begin = 0
-            page_size = 5  # 参考代码建议使用较小的count值
+            page_size = 5
+            stop_due_to_time = False  # 标记是否因时间范围停止
             
             while True:  # 去掉max_articles限制，改为无限循环直到没有更多文章
                 current_count = page_size
@@ -2171,6 +2193,19 @@ class WechatArticleCollector:
                 if 'base_resp' in data:
                     logger.info(f"base_resp: {data.get('base_resp')}")
                 
+                # 检查API返回的错误状态
+                if 'base_resp' in data and data.get('base_resp', {}).get('ret') != 0:
+                    error_msg = data.get('base_resp', {}).get('err_msg', '未知错误')
+                    ret_code = data.get('base_resp', {}).get('ret', -1)
+                    
+                    if ret_code == 200013 or 'freg control' in error_msg.lower():
+                        logger.warning(f"触发微信API频率限制，已获取 {len(all_articles)} 篇文章，停止采集")
+                        break
+                    else:
+                        logger.error(f"API返回错误: {error_msg} (代码: {ret_code})")
+                        break
+
+                # 获取文章列表
                 if 'base_resp' in data and data.get('base_resp', {}).get('ret') == 0:
                     app_msg_list = data.get('app_msg_list', [])
                 elif 'app_msg_list' in data:
@@ -2192,19 +2227,40 @@ class WechatArticleCollector:
                     formatted_time = self._convert_timestamp(create_time)
                     logger.info(f"  主文章 {i+1}: {title} (时间: {formatted_time}, 原始: {create_time})")
                 
+                # 实时处理文章并进行时间过滤
+                page_articles_added = 0
                 for item in app_msg_list:
+                    create_time = item.get('create_time', 0)
+                    
+                    # 实时时间判断 - 如果文章时间早于开始时间，说明后续文章都会更早，可以停止
+                    if start_timestamp and create_time < start_timestamp:
+                        article_dt = datetime.fromtimestamp(create_time)
+                        logger.info(f"文章时间 {article_dt.strftime('%Y-%m-%d')} 早于开始时间，停止获取文章列表")
+                        stop_due_to_time = True
+                        break
+                    
+                    # 检查文章是否在时间范围内
+                    in_time_range = True
+                    if end_timestamp and create_time > end_timestamp:
+                        in_time_range = False
+                        logger.debug(f"文章时间晚于结束时间，跳过")
+                    
+                    if not in_time_range:
+                        continue
+                    
                     # 处理主文章
                     if item.get('title') and item.get('link'):
                         article = {
                             'title': item.get('title', ''),
                             'url': item.get('link', ''),
                             'author': item.get('author', ''),
-                            'publish_time': self._convert_timestamp(item.get('create_time', 0)),
+                            'publish_time': self._convert_timestamp(create_time),
                             'digest': item.get('digest', ''),
                             'cover': item.get('cover', ''),
                             'source': '微信公众平台API'
                         }
                         all_articles.append(article)
+                        page_articles_added += 1
                         logger.debug(f"添加主文章: {article['title'][:30]}")
                     
                     # 处理多篇文章 (一个消息组里的其他文章)
@@ -2215,16 +2271,24 @@ class WechatArticleCollector:
                                     'title': sub_item.get('title', ''),
                                     'url': sub_item.get('link', ''),
                                     'author': sub_item.get('author', ''),
-                                    'publish_time': self._convert_timestamp(item.get('create_time', 0)),  # 使用主文章的时间
+                                    'publish_time': self._convert_timestamp(create_time),  # 使用主文章的时间
                                     'digest': sub_item.get('digest', ''),
                                     'cover': sub_item.get('cover', ''),
                                     'source': '微信公众平台API'
                                 }
                                 all_articles.append(sub_article)
+                                page_articles_added += 1
                                 logger.debug(f"添加子文章: {sub_article['title'][:30]}")
                         
                         multi_count = len(item['multi_app_msg_item_list'])
                         logger.info(f"  此消息组包含 {multi_count} 篇子文章")
+                
+                # 如果因时间范围停止，跳出主循环
+                if stop_due_to_time:
+                    logger.info(f"因时间范围限制停止，本页添加了 {page_articles_added} 篇文章")
+                    break
+                
+                logger.info(f"第 {begin//page_size + 1} 页在时间范围内的文章: {page_articles_added} 篇")
                 
                 # 检查是否还有更多文章 - 使用消息组数量而不是文章数量
                 if len(app_msg_list) < current_count:
@@ -2239,8 +2303,8 @@ class WechatArticleCollector:
                 # 更新begin - 使用标准的分页方式
                 begin += current_count
                 
-                # 添加延时避免请求过快
-                time.sleep(2)  # 增加延时时间
+                # 添加延时避免请求过快，防止频率限制
+                time.sleep(3)  # 增加到3秒延时
             
             logger.info(f"微信公众平台API总共获取到 {len(all_articles)} 篇文章")
             
