@@ -231,13 +231,18 @@ class WechatCollectorCLI:
                 print(f"读取文章失败: {e}")
     
     def time_range_collect(self, account_name, start_date, end_date, formats=['pdf', 'docx']):
-        """时间段采集 - 支持用户指定格式 '中核集团 20250501 20250601'"""
+        """时间段采集 - 支持用户指定格式和时间范围过滤 '中核集团 20250501 20250601'"""
         print(f"开始时间段采集: {account_name} ({start_date} - {end_date})")
         print(f"导出格式: {', '.join(formats)}")
         
-        # 直接使用指定格式进行采集和导出，而不是先collect_articles再处理
+        # 使用指定格式和时间范围进行采集和导出
         print("步骤1: 采集并导出文章...")
-        result = self.local_collector.collect_and_export_articles(account_name, max_articles=100, export_formats=formats)
+        result = self.local_collector.collect_and_export_articles(
+            account_name, 
+            export_formats=formats,
+            start_date=start_date,
+            end_date=end_date
+        )
         
         if not result['success']:
             print(f"采集失败: {result['message']}")
@@ -256,9 +261,15 @@ class WechatCollectorCLI:
         
         print(f"\n✅ 时间段采集完成!")
         print(f"   账号: {account_name}")
-        print(f"   时间范围: {start_date}-{end_date}")
+        print(f"   时间范围: {start_date} - {end_date}")
         print(f"   文章数量: {result['articles_count']}")
         print(f"   格式: {', '.join(formats)}")
+        
+        # 显示采集统计
+        stats = self.local_collector.get_collection_stats()
+        if stats:
+            print(f"   成功率: {stats.get('success_rate', 0):.1f}%")
+            print(f"   用时: {stats.get('duration_seconds', 0):.1f} 秒")
     
     def add_monitor(self, account_name, check_interval=30, max_articles=10, export_formats=['pdf', 'docx'], use_api=False):
         """添加账号监控"""
