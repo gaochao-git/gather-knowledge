@@ -19,216 +19,108 @@ from wechat_articles.monitor.account_monitor import account_monitor
 from wechat_articles.wechat_config import WECHAT_TOKEN, WECHAT_COOKIES, WECHAT_FAKEID
 
 class WechatCollectorCLI:
-    def __init__(self, base_url='http://localhost:5000'):
-        self.base_url = base_url
+    def __init__(self):
         # 使用配置的token、cookies和fakeid初始化采集器（批量采集）
-        self.local_collector = WechatArticleCollector(token=WECHAT_TOKEN, cookies=WECHAT_COOKIES, fakeid=WECHAT_FAKEID, storage_type='batch')
+        self.collector = WechatArticleCollector(token=WECHAT_TOKEN, cookies=WECHAT_COOKIES, fakeid=WECHAT_FAKEID, storage_type='batch')
         
         # 显示配置状态
         if WECHAT_TOKEN:
-            print("✅ 已配置微信公众平台token，将优先使用API方式采集")
+            print("✅ 已配置微信公众平台token")
             if WECHAT_FAKEID:
                 print("✅ 已配置FAKEID，将直接使用指定公众号")
         else:
-            print("⚠️  未配置微信公众平台token，将使用搜索方式采集")
+            print("⚠️  未配置微信公众平台token")
     
-    def collect_account(self, account_name, max_articles=20, use_api=False, export_formats=None):
+    def collect_account(self, account_name, export_formats=None):
         """采集指定公众号文章"""
+        if not export_formats:
+            export_formats = ['pdf', 'docx']
+            
         print(f"开始采集公众号: {account_name}")
+        print(f"导出格式: {', '.join(export_formats)}")
         
-        if export_formats:
-            print(f"导出格式: {', '.join(export_formats)}")
+        # 直接本地采集并导出
+        result = self.collector.collect_and_export_articles(account_name, export_formats)
         
-        if use_api:
-            # 使用API采集
-            if export_formats:
-                # 使用采集+导出API
-                response = requests.post(f'{self.base_url}/api/collectors/wechat/collect-export', json={
-                    'account_name': account_name,
-                    'max_articles': max_articles,
-                    'export_formats': export_formats,
-                    'async': True
-                })
-            else:
-                # 使用普通采集API
-                response = requests.post(f'{self.base_url}/api/collectors/wechat/collect', json={
-                    'account_name': account_name,
-                    'max_articles': max_articles,
-                    'async': True
-                })
+        if result.get('success'):
+            print(f"✅ 采集导出完成!")
+            print(f"文章数量: {result.get('articles_count', 0)} 篇")
+            export_stats = result.get('export_stats', {})
+            if export_stats:
+                print("导出统计:")
+                for fmt, count in export_stats.items():
+                    if count > 0:
+                        print(f"  {fmt.upper()}: {count} 个文件")
+            print(f"导出目录: {result.get('export_directory', 'N/A')}")
             
-            if response.status_code == 200:
-                data = response.json()['data']
-                collector_key = data['collector_key']
-                print(f"采集任务已启动，任务ID: {collector_key}")
-                
-                # 等待采集完成
-                while True:
-                    status_response = requests.get(f'{self.base_url}/api/collectors/status/{collector_key}')
-                    if status_response.status_code == 200:
-                        status_data = status_response.json()['data']
-                        print(f"当前状态: {status_data['status']}")
-                        
-                        if status_data['status'] == 'completed':
-                            result = status_data.get('result', {})
-                            if export_formats:
-                                print(f"采集导出完成!")
-                                print(f"文章数量: {result.get('articles_count', 0)}")
-                                export_stats = result.get('export_stats', {})
-                                if export_stats:
-                                    print("导出统计:")
-                                    for fmt, count in export_stats.items():
-                                        print(f"  {fmt.upper()}: {count} 个文件")
-                                print(f"导出目录: {result.get('export_directory', 'N/A')}")
-                            else:
-                                print(f"采集完成! 共采集 {result.get('articles_count', 0)} 篇文章")
-                            break
-                        elif status_data['status'] == 'failed':
-                            print(f"采集失败: {status_data.get('error', '未知错误')}")
-                            break
-                    
-                    time.sleep(5)
-            else:
-                print(f"启动采集失败: {response.text}")
-        
+            # 显示失败信息
+            if result.get('failed_file'):
+                print(f"❌ 失败链接文件: {result['failed_file']}")
+                print(f"💡 使用 'retry-failed' 命令重新采集失败的文章")
         else:
-            # 直接本地采集
-            if export_formats:
-                # 采集并导出
-                result = self.local_collector.collect_and_export_articles(account_name, max_articles, export_formats)
-                
-                if result.get('success'):
-                    print(f"采集导出完成!")
-                    print(f"文章数量: {result.get('articles_count', 0)}")
-                    export_stats = result.get('export_stats', {})
-                    if export_stats:
-                        print("导出统计:")
-                        for fmt, count in export_stats.items():
-                            print(f"  {fmt.upper()}: {count} 个文件")
-                    print(f"导出目录: {result.get('export_directory', 'N/A')}")
-                else:
-                    print(f"采集导出失败: {result.get('message', '未知错误')}")
-            else:
-                # 普通采集
-                articles = self.local_collector.collect_articles(account_name, max_articles)
-                stats = self.local_collector.get_collection_stats()
-                
-                print(f"采集完成!")
-                print(f"成功采集: {stats['success_count']} 篇")
-                print(f"失败数量: {stats['error_count']} 篇")
-                print(f"成功率: {stats['success_rate']:.1f}%")
-                print(f"用时: {stats['duration_seconds']:.1f} 秒")
-                
-                if articles:
-                    print(f"\n前5篇文章预览:")
-                    for i, article in enumerate(articles[:5], 1):
-                        print(f"  {i}. {article['title'][:50]}...")
+            print(f"❌ 采集导出失败: {result.get('message', '未知错误')}")
     
-    def list_accounts(self, use_api=False):
+    def list_accounts(self):
         """列出所有账号及统计信息"""
-        if use_api:
-            response = requests.get(f'{self.base_url}/api/files/accounts')
-            
-            if response.status_code == 200:
-                accounts = response.json()['data']['accounts']
-                print("\n账号列表:")
-                print("-" * 80)
-                print(f"{'账号名称':<20} {'文章数':<10} {'大小(MB)':<10} {'最后更新'}")
-                print("-" * 80)
-                
-                for account in accounts:
-                    print(f"{account['account_name']:<20} "
-                          f"{account['article_count']:<10} "
-                          f"{account['local_size_mb']:<10.1f} "
-                          f"{account.get('last_article_time', 'N/A')[:10]}")
-            else:
-                print(f"获取账号列表失败: {response.text}")
+        batch_dir = Path('wechat_articles/storage/batch_data')
+        monitor_dir = Path('wechat_articles/storage/monitor_data')
         
-        else:
-            # 直接读取本地文件
-            batch_dir = Path('wechat_articles/storage/batch_data')
-            monitor_dir = Path('wechat_articles/storage/monitor_data')
-            
-            print("\n本地账号列表:")
-            print("-" * 80)
-            print(f"{'类型':<10} {'账号名称':<20} {'文章数':<10} {'大小(MB)':<10}")
-            print("-" * 80)
-            
-            # 批量采集的账号
-            if batch_dir.exists():
-                for account_dir in batch_dir.iterdir():
-                    if account_dir.is_dir():
-                        file_count = len(list(account_dir.glob('*.*')))  # 所有格式的文件
-                        total_size = sum(f.stat().st_size for f in account_dir.rglob('*') if f.is_file())
-                        size_mb = total_size / (1024 * 1024)
-                        
-                        print(f"{'批量':<10} {account_dir.name:<20} {file_count:<10} {size_mb:<10.1f}")
-            
-            # 监控采集的账号
-            if monitor_dir.exists():
-                for account_dir in monitor_dir.iterdir():
-                    if account_dir.is_dir():
-                        file_count = len(list(account_dir.glob('*.*')))  # 所有格式的文件
-                        total_size = sum(f.stat().st_size for f in account_dir.rglob('*') if f.is_file())
-                        size_mb = total_size / (1024 * 1024)
-                        
-                        print(f"{'监控':<10} {account_dir.name:<20} {file_count:<10} {size_mb:<10.1f}")
-            
-            if not batch_dir.exists() and not monitor_dir.exists():
-                print("暂无采集数据")
+        print("\n📂 本地账号列表:")
+        print("-" * 80)
+        print(f"{'类型':<10} {'账号名称':<20} {'文章数':<10} {'大小(MB)':<10}")
+        print("-" * 80)
+        
+        # 批量采集的账号
+        if batch_dir.exists():
+            for account_dir in batch_dir.iterdir():
+                if account_dir.is_dir():
+                    file_count = len(list(account_dir.glob('*.*')))  # 所有格式的文件
+                    total_size = sum(f.stat().st_size for f in account_dir.rglob('*') if f.is_file())
+                    size_mb = total_size / (1024 * 1024)
+                    
+                    print(f"{'批量':<10} {account_dir.name:<20} {file_count:<10} {size_mb:<10.1f}")
+        
+        # 监控采集的账号
+        if monitor_dir.exists():
+            for account_dir in monitor_dir.iterdir():
+                if account_dir.is_dir():
+                    file_count = len(list(account_dir.glob('*.*')))  # 所有格式的文件
+                    total_size = sum(f.stat().st_size for f in account_dir.rglob('*') if f.is_file())
+                    size_mb = total_size / (1024 * 1024)
+                    
+                    print(f"{'监控':<10} {account_dir.name:<20} {file_count:<10} {size_mb:<10.1f}")
+        
+        if not batch_dir.exists() and not monitor_dir.exists():
+            print("暂无采集数据")
     
-    def show_article_content(self, account_name, filename, use_api=False):
+    def show_article_content(self, account_name, filename):
         """显示文章内容"""
-        if use_api:
-            response = requests.get(f'{self.base_url}/api/files/accounts/{account_name}/articles/{filename}/content')
+        # 直接读取本地文件
+        json_file = Path('wechat_articles/storage/batch_data') / account_name / f"{filename}.json"
+        
+        if not json_file.exists():
+            print("文章不存在")
+            return
+        
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
             
-            if response.status_code == 200:
-                data = response.json()['data']
-                metadata = data['metadata']
-                print(f"\n标题: {metadata.get('title', 'N/A')}")
-                print(f"作者: {metadata.get('author', 'N/A')}")
-                print(f"发布时间: {metadata.get('publish_time', 'N/A')}")
-                print(f"采集时间: {metadata.get('collected_at', 'N/A')}")
-                print(f"URL: {metadata.get('url', 'N/A')}")
-                print("-" * 60)
-                
-                # 显示部分内容
-                soup = BeautifulSoup(data['content'], 'html.parser')
+            print(f"\n标题: {metadata.get('title', 'N/A')}")
+            print(f"作者: {metadata.get('author', 'N/A')}")
+            print(f"发布时间: {metadata.get('publish_time', 'N/A')}")
+            print(f"采集时间: {metadata.get('collected_at', 'N/A')}")
+            print(f"URL: {metadata.get('url', 'N/A')}")
+            print("-" * 60)
+            
+            # 显示部分内容
+            if 'content' in metadata:
+                soup = BeautifulSoup(metadata['content'], 'html.parser')
                 text_content = soup.get_text()[:500]
                 print(f"内容预览:\n{text_content}...")
-            else:
-                print(f"获取文章内容失败: {response.text}")
-        
-        else:
-            # 直接读取本地文件
-            json_file = Path('articles') / account_name / f"{filename}.json"
-            html_file = Path('articles') / account_name / f"{filename}.html"
             
-            if not json_file.exists():
-                print("文章不存在")
-                return
-            
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                
-                print(f"\n标题: {metadata.get('title', 'N/A')}")
-                print(f"作者: {metadata.get('author', 'N/A')}")
-                print(f"发布时间: {metadata.get('publish_time', 'N/A')}")
-                print(f"采集时间: {metadata.get('collected_at', 'N/A')}")
-                print(f"URL: {metadata.get('url', 'N/A')}")
-                
-                if html_file.exists():
-                    with open(html_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    soup = BeautifulSoup(content, 'html.parser')
-                    text_content = soup.get_text()[:500]
-                    print("-" * 60)
-                    print(f"内容预览:\n{text_content}...")
-                
-            except Exception as e:
-                print(f"读取文章失败: {e}")
+        except Exception as e:
+            print(f"读取文章失败: {e}")
     
     def time_range_collect(self, account_name, start_date, end_date, formats=['pdf', 'docx']):
         """时间段采集 - 支持用户指定格式和时间范围过滤 '中核集团 20250501 20250601'"""
@@ -237,7 +129,7 @@ class WechatCollectorCLI:
         
         # 使用指定格式和时间范围进行采集和导出
         print("步骤1: 采集并导出文章...")
-        result = self.local_collector.collect_and_export_articles(
+        result = self.collector.collect_and_export_articles(
             account_name, 
             export_formats=formats,
             start_date=start_date,
@@ -266,10 +158,97 @@ class WechatCollectorCLI:
         print(f"   格式: {', '.join(formats)}")
         
         # 显示采集统计
-        stats = self.local_collector.get_collection_stats()
+        stats = self.collector.get_collection_stats()
         if stats:
             print(f"   成功率: {stats.get('success_rate', 0):.1f}%")
             print(f"   用时: {stats.get('duration_seconds', 0):.1f} 秒")
+            
+            # 显示失败链接文件信息
+            if stats.get('failed_articles_count', 0) > 0:
+                print(f"   失败文章: {stats['failed_articles_count']} 篇")
+                if result.get('failed_file'):
+                    print(f"   失败链接文件: {result['failed_file']}")
+                    print(f"   💡 可以使用 'retry-failed' 命令重新采集失败的文章")
+    
+    def retry_failed_collection(self, failed_file_path, formats=['pdf', 'docx']):
+        """从失败链接文件重新采集文章"""
+        print(f"开始重新采集失败文章: {failed_file_path}")
+        print(f"导出格式: {', '.join(formats)}")
+        
+        # 检查失败链接文件是否存在
+        if not Path(failed_file_path).exists():
+            print(f"❌ 失败链接文件不存在: {failed_file_path}")
+            return
+        
+        try:
+            # 从失败链接文件重新采集
+            result = self.collector.collect_from_failed_links(failed_file_path, formats)
+            
+            if result['success']:
+                print(f"✅ 重新采集完成!")
+                print(f"   文章数量: {result['articles_count']} 篇")
+                print(f"   成功采集: {result['success_count']} 篇")
+                print(f"   仍然失败: {result['failed_count']} 篇")
+                
+                if result.get('new_failed_file'):
+                    print(f"   新失败链接文件: {result['new_failed_file']}")
+                    print(f"   💡 可以再次使用此文件进行重试")
+                else:
+                    print(f"   🎉 所有文章都重新采集成功!")
+            else:
+                print(f"❌ 重新采集失败: {result['message']}")
+                
+        except Exception as e:
+            print(f"❌ 重新采集异常: {e}")
+    
+    def list_failed_files(self):
+        """列出所有失败链接文件"""
+        batch_dir = Path('wechat_articles/storage/batch_data')
+        
+        if not batch_dir.exists():
+            print("📁 存储目录不存在")
+            return
+            
+        failed_files = []
+        
+        # 查找所有失败链接文件
+        for failed_file in batch_dir.rglob('*_failed_articles_*.json'):
+            try:
+                with open(failed_file, 'r', encoding='utf-8') as f:
+                    failed_data = json.load(f)
+                
+                failed_files.append({
+                    'path': str(failed_file),
+                    'filename': failed_file.name,
+                    'account': failed_data.get('account_name', '未知'),
+                    'failed_count': failed_data.get('failed_count', 0),
+                    'collection_time': failed_data.get('collection_time', ''),
+                    'size': failed_file.stat().st_size
+                })
+            except Exception as e:
+                print(f"⚠️  读取失败文件 {failed_file} 出错: {e}")
+                continue
+        
+        if not failed_files:
+            print("📋 没有找到失败链接文件")
+            return
+            
+        print(f"\n📋 失败链接文件列表 ({len(failed_files)} 个):")
+        print("-" * 100)
+        print(f"{'文件名':<35} {'账号':<15} {'失败数':<8} {'创建时间':<20} {'大小':<10}")
+        print("-" * 100)
+        
+        for file_info in sorted(failed_files, key=lambda x: x['collection_time'], reverse=True):
+            collection_time = file_info['collection_time'][:19] if file_info['collection_time'] else 'N/A'
+            size_kb = file_info['size'] / 1024
+            
+            print(f"{file_info['filename']:<35} "
+                  f"{file_info['account']:<15} "
+                  f"{file_info['failed_count']:<8} "
+                  f"{collection_time:<20} "
+                  f"{size_kb:.1f}KB")
+        
+        print(f"\n💡 使用 'retry-failed <文件路径>' 命令重新采集失败的文章")
     
     def add_monitor(self, account_name, check_interval=30, max_articles=10, export_formats=['pdf', 'docx'], use_api=False):
         """添加账号监控"""

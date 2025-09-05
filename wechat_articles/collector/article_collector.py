@@ -51,6 +51,9 @@ class WechatArticleCollector:
             'error_count': 0,
             'start_time': None
         }
+        
+        # 失败链接存储
+        self.failed_articles = []
     
     def _set_cookies(self, cookies):
         """设置cookies"""
@@ -79,12 +82,16 @@ class WechatArticleCollector:
         
         articles = self._collect_articles_with_formats(account_name, export_formats, start_date, end_date)
         
+        # 保存失败链接文件（如果有失败的文章）
+        failed_file_path = self._save_failed_articles(account_name)
+        
         if not articles:
             return {
                 'success': False,
                 'message': '未采集到任何文章',
                 'articles_count': 0,
-                'export_stats': {fmt: 0 for fmt in export_formats}
+                'export_stats': {fmt: 0 for fmt in export_formats},
+                'failed_file': failed_file_path
             }
         
         account_dir = self.base_output_dir / self._safe_filename(account_name)
@@ -109,7 +116,8 @@ class WechatArticleCollector:
             'message': f'采集并导出完成',
             'articles_count': len(articles),
             'export_stats': export_stats,
-            'export_directory': str(account_dir)
+            'export_directory': str(account_dir),
+            'failed_file': failed_file_path
         }
     
     def _collect_articles_with_formats(self, account_name, export_formats, start_date=None, end_date=None):
@@ -137,97 +145,6 @@ class WechatArticleCollector:
             logger.error(f"采集过程出错: {e}")
             return []
     
-    def _filter_articles_by_date_range(self, articles, start_date, end_date):
-        """根据时间范围过滤文章"""
-        try:
-            filtered_articles = []
-            
-            # 解析时间范围
-            start_timestamp = None
-            end_timestamp = None
-            
-            if start_date:
-                try:
-                    # 支持多种日期格式: 20250501, 2025-05-01
-                    if len(start_date) == 8 and start_date.isdigit():
-                        # 20250501 格式
-                        start_dt = datetime.strptime(start_date, '%Y%m%d')
-                    else:
-                        # 2025-05-01 格式
-                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                    start_timestamp = start_dt.timestamp()
-                    logger.info(f"开始时间: {start_dt.strftime('%Y-%m-%d')}")
-                except ValueError as e:
-                    logger.warning(f"开始日期格式错误: {start_date}, 错误: {e}")
-            
-            if end_date:
-                try:
-                    # 支持多种日期格式
-                    if len(end_date) == 8 and end_date.isdigit():
-                        # 20250501 格式
-                        end_dt = datetime.strptime(end_date, '%Y%m%d')
-                    else:
-                        # 2025-05-01 格式
-                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                    # 设置为当天的23:59:59
-                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
-                    end_timestamp = end_dt.timestamp()
-                    logger.info(f"结束时间: {end_dt.strftime('%Y-%m-%d')}")
-                except ValueError as e:
-                    logger.warning(f"结束日期格式错误: {end_date}, 错误: {e}")
-            
-            # 过滤文章
-            for article in articles:
-                article_time = article.get('publish_time')
-                if not article_time:
-                    continue
-                
-                try:
-                    # 如果是时间戳格式，直接使用
-                    if isinstance(article_time, (int, float)):
-                        article_timestamp = float(article_time)
-                    elif isinstance(article_time, str) and article_time.isdigit():
-                        article_timestamp = float(article_time)
-                    else:
-                        # 字符串时间格式，需要转换
-                        # 可能的格式: "2025-05-01 10:30:00", "2025-05-01"
-                        if len(article_time) > 10:
-                            article_dt = datetime.strptime(article_time[:19], '%Y-%m-%d %H:%M:%S')
-                        else:
-                            article_dt = datetime.strptime(article_time[:10], '%Y-%m-%d')
-                        article_timestamp = article_dt.timestamp()
-                    
-                    # 应用时间范围过滤
-                    include_article = True
-                    
-                    if start_timestamp and article_timestamp < start_timestamp:
-                        include_article = False
-                        logger.debug(f"文章时间早于开始时间: {article.get('title', '')[:30]}")
-                    
-                    if end_timestamp and article_timestamp > end_timestamp:
-                        include_article = False
-                        logger.debug(f"文章时间晚于结束时间: {article.get('title', '')[:30]}")
-                    
-                    if include_article:
-                        filtered_articles.append(article)
-                        logger.debug(f"包含文章: {article.get('title', '')[:30]} ({article_time})")
-                
-                except Exception as e:
-                    logger.warning(f"解析文章时间失败: {article_time}, 错误: {e}")
-                    # 如果时间解析失败，默认包含该文章
-                    if not start_date and not end_date:  # 如果没有设置时间范围，包含所有文章
-                        filtered_articles.append(article)
-                    continue
-            
-            logger.info(f"时间范围过滤完成: 原始 {len(articles)} 篇 → 过滤后 {len(filtered_articles)} 篇")
-            return filtered_articles
-            
-        except Exception as e:
-            logger.error(f"时间范围过滤失败: {e}")
-            logger.exception("详细错误信息:")
-            # 过滤失败时返回原始文章列表
-            return articles
-    
     def _process_articles_with_formats(self, articles, account_name, export_formats):
         """处理文章列表，获取详情并保存为多种格式"""
         collected_articles = []
@@ -240,7 +157,12 @@ class WechatArticleCollector:
                 
                 article_detail = self._get_article_detail(article['url'])
                 if article_detail:
+                    # 保留原始的publish_time，不让article_detail中的时间覆盖
+                    original_publish_time = article.get('publish_time')
                     full_article = {**article, **article_detail}
+                    # 确保使用原始的publish_time
+                    if original_publish_time:
+                        full_article['publish_time'] = original_publish_time
                     full_article['account_name'] = account_name
                     full_article['collected_at'] = datetime.now().isoformat()
                     
@@ -251,12 +173,32 @@ class WechatArticleCollector:
                     logger.info(f"采集成功: {full_article['title'][:30]}")
                 else:
                     logger.warning(f"获取文章详情失败: {article['title'][:30]}")
+                    # 保存失败的文章信息
+                    self.failed_articles.append({
+                        'title': article.get('title', ''),
+                        'url': article.get('url', ''),
+                        'author': article.get('author', ''),
+                        'publish_time': article.get('publish_time', ''),
+                        'digest': article.get('digest', ''),
+                        'failed_reason': '获取文章详情失败',
+                        'failed_time': datetime.now().isoformat()
+                    })
                     self.stats['error_count'] += 1
                 
                 time.sleep(2)
                 
             except Exception as e:
                 logger.error(f"采集文章失败: {e}")
+                # 保存失败的文章信息
+                self.failed_articles.append({
+                    'title': article.get('title', ''),
+                    'url': article.get('url', ''),
+                    'author': article.get('author', ''),
+                    'publish_time': article.get('publish_time', ''),
+                    'digest': article.get('digest', ''),
+                    'failed_reason': f'采集异常: {str(e)}',
+                    'failed_time': datetime.now().isoformat()
+                })
                 self.stats['error_count'] += 1
                 continue
         
@@ -2486,8 +2428,8 @@ class WechatArticleCollector:
                         logger.debug(f"找到发布时间: {article_detail['publish_time']}")
                         break
             
-            if not article_detail['publish_time']:
-                article_detail['publish_time'] = datetime.now().strftime('%Y-%m-%d')
+            # 如果没有从页面提取到发布时间，保持原有的publish_time（不要覆盖）
+            # 注释掉强制覆盖的逻辑，让外部传入的publish_time得以保留
             
             return article_detail
             
@@ -2708,7 +2650,7 @@ class WechatArticleCollector:
             return datetime.now().strftime('%Y-%m-%d')
     
     def _generate_filename(self, article):
-        """生成文件名 - 格式: 账号_文章名_发表时间"""
+        """生成文件名 - 格式: 文章名_账号_发表时间"""
         # 获取账号名
         account_name = article.get('account_name', '未知账号')
         safe_account = self._safe_filename(account_name)[:20]  # 限制账号名长度
@@ -2719,8 +2661,9 @@ class WechatArticleCollector:
         
         # 获取发表时间
         pub_time = article.get('publish_time', '')
+        logger.info(f"处理文章发表时间: {pub_time}")  # 改为info级别确保能看到
         try:
-            if pub_time and ('-' in pub_time or '年' in pub_time):
+            if pub_time:
                 # 处理不同时间格式
                 if '年' in pub_time and '月' in pub_time and '日' in pub_time:
                     # 中文时间格式：2025年8月25日
@@ -2729,21 +2672,32 @@ class WechatArticleCollector:
                     if match:
                         year, month, day = match.groups()
                         date_str = f"{year}{month.zfill(2)}{day.zfill(2)}"
+                        logger.debug(f"中文时间格式解析成功: {date_str}")
                     else:
                         date_str = datetime.now().strftime('%Y%m%d')
-                elif '-' in pub_time:
+                        logger.debug(f"中文时间格式解析失败，使用当前日期: {date_str}")
+                elif '-' in pub_time or ':' in pub_time:
                     # 标准时间格式：2025-08-25 或 2025-08-25 15:30:25
-                    date_str = pub_time.split()[0].replace('-', '')
+                    date_part = pub_time.split()[0]  # 取日期部分
+                    if '-' in date_part:
+                        date_str = date_part.replace('-', '')
+                        logger.info(f"标准时间格式解析成功: {date_str}")
+                    else:
+                        date_str = datetime.now().strftime('%Y%m%d')
+                        logger.info(f"标准时间格式解析失败，使用当前日期: {date_str}")
                 else:
                     date_str = datetime.now().strftime('%Y%m%d')
+                    logger.debug(f"未知时间格式，使用当前日期: {date_str}")
             else:
                 date_str = datetime.now().strftime('%Y%m%d')
+                logger.debug(f"发表时间为空，使用当前日期: {date_str}")
         except Exception as e:
             logger.debug(f"时间格式解析失败: {e}")
             date_str = datetime.now().strftime('%Y%m%d')
         
-        # 生成文件名：账号_文章名_发表时间
-        filename = f"{safe_account}_{safe_title}_{date_str}"
+        # 生成文件名：文章名_账号_发表时间
+        # filename = f"{safe_title}_{safe_account}_{date_str}"
+        filename = f"{safe_title}_{date_str}"
         
         # 如果文件名过长，进行截断但保持格式
         max_length = 200  # 文件名最大长度限制
@@ -2832,5 +2786,87 @@ class WechatArticleCollector:
             **self.stats,
             'end_time': end_time.isoformat() if self.stats['start_time'] else None,
             'duration_seconds': duration,
-            'success_rate': self.stats['success_count'] / max(self.stats['total_collected'], 1) * 100
+            'success_rate': self.stats['success_count'] / max(self.stats['total_collected'], 1) * 100,
+            'failed_articles_count': len(self.failed_articles)
         }
+    
+    def _save_failed_articles(self, account_name):
+        """保存失败的文章链接到文件"""
+        if not self.failed_articles:
+            logger.info("没有失败的文章链接需要保存")
+            return None
+            
+        try:
+            # 生成失败链接文件名
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_account = self._safe_filename(account_name)
+            failed_filename = f"{safe_account}_failed_articles_{timestamp}.json"
+            failed_path = self.base_output_dir / failed_filename
+            
+            # 保存失败链接
+            failed_data = {
+                'account_name': account_name,
+                'collection_time': datetime.now().isoformat(),
+                'failed_count': len(self.failed_articles),
+                'failed_articles': self.failed_articles
+            }
+            
+            with open(failed_path, 'w', encoding='utf-8') as f:
+                json.dump(failed_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"保存 {len(self.failed_articles)} 个失败链接到: {failed_path}")
+            return str(failed_path)
+            
+        except Exception as e:
+            logger.error(f"保存失败链接文件失败: {e}")
+            return None
+    
+    def collect_from_failed_links(self, failed_file_path, export_formats=None):
+        """从失败链接文件重新采集文章"""
+        if export_formats is None:
+            export_formats = ['pdf', 'docx']
+            
+        try:
+            # 读取失败链接文件
+            with open(failed_file_path, 'r', encoding='utf-8') as f:
+                failed_data = json.load(f)
+            
+            account_name = failed_data.get('account_name', '未知账号')
+            failed_articles = failed_data.get('failed_articles', [])
+            
+            if not failed_articles:
+                logger.warning("失败链接文件中没有文章")
+                return {
+                    'success': False,
+                    'message': '失败链接文件中没有文章',
+                    'articles_count': 0
+                }
+            
+            logger.info(f"开始重新采集 {len(failed_articles)} 个失败链接")
+            self.stats['start_time'] = datetime.now()
+            self.failed_articles = []  # 重置失败链接列表
+            
+            # 重新采集
+            collected_articles = self._process_articles_with_formats(
+                failed_articles, account_name, export_formats
+            )
+            
+            # 保存新的失败链接（如果有）
+            new_failed_file = self._save_failed_articles(account_name)
+            
+            return {
+                'success': True,
+                'message': f'重新采集完成',
+                'articles_count': len(collected_articles),
+                'success_count': self.stats['success_count'],
+                'failed_count': len(self.failed_articles),
+                'new_failed_file': new_failed_file
+            }
+            
+        except Exception as e:
+            logger.error(f"从失败链接重新采集失败: {e}")
+            return {
+                'success': False,
+                'message': f'重新采集失败: {e}',
+                'articles_count': 0
+            }

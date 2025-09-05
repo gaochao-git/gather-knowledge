@@ -30,7 +30,7 @@ def main():
     wechat_time_range_parser.add_argument('account_name', help='公众号名称')
     wechat_time_range_parser.add_argument('start_date', help='开始日期 (格式: 20250501)')
     wechat_time_range_parser.add_argument('end_date', help='结束日期 (格式: 20250601)')
-    wechat_time_range_parser.add_argument('--formats', default='html', help='导出格式，逗号分隔 (pdf,docx,html)')
+    wechat_time_range_parser.add_argument('--formats', default='pdf', help='导出格式，逗号分隔 (pdf,docx,html)')
     
     # 微信列表命令
     wechat_list_parser = wechat_subparsers.add_parser('list', help='列出所有账号')
@@ -73,6 +73,14 @@ def main():
     wechat_check_monitor_parser = wechat_monitor_subparsers.add_parser('check', help='强制检查账号更新')
     wechat_check_monitor_parser.add_argument('account_name', help='公众号名称')
     wechat_check_monitor_parser.add_argument('--use-api', action='store_true', help='使用API模式')
+    
+    # 重新采集失败链接命令
+    wechat_retry_parser = wechat_subparsers.add_parser('retry-failed', help='从失败链接文件重新采集文章')
+    wechat_retry_parser.add_argument('failed_file_path', help='失败链接文件路径')
+    wechat_retry_parser.add_argument('--formats', default='pdf,docx', help='导出格式，逗号分隔')
+    
+    # 列出失败链接文件命令
+    wechat_list_failed_parser = wechat_subparsers.add_parser('list-failed', help='列出所有失败链接文件')
     
     args = parser.parse_args()
     
@@ -121,6 +129,11 @@ def main():
                     cli.force_check(args.account_name, args.use_api)
                 else:
                     print("请指定监控操作: add, list, remove, toggle, check")
+            elif args.wechat_command == 'retry-failed':
+                formats = [f.strip() for f in args.formats.split(',')]
+                cli.retry_failed_collection(args.failed_file_path, formats)
+            elif args.wechat_command == 'list-failed':
+                cli.list_failed_files()
         
         except KeyboardInterrupt:
             print("\n操作已取消")

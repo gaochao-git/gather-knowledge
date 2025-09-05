@@ -73,6 +73,14 @@ def main():
     check_monitor_parser.add_argument('account_name', help='公众号名称')
     check_monitor_parser.add_argument('--use-api', action='store_true', help='使用API模式')
     
+    # 重新采集失败链接命令
+    retry_parser = subparsers.add_parser('retry-failed', help='从失败链接文件重新采集文章')
+    retry_parser.add_argument('failed_file_path', help='失败链接文件路径')
+    retry_parser.add_argument('--formats', default='pdf,docx', help='导出格式，逗号分隔 (pdf,docx,html)')
+    
+    # 列出失败链接文件命令
+    list_failed_parser = subparsers.add_parser('list-failed', help='列出所有失败链接文件')
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -109,6 +117,11 @@ def main():
                 cli.force_check(args.account_name, args.use_api)
             else:
                 print("请指定监控操作: add, list, remove, toggle, check")
+        elif args.command == 'retry-failed':
+            formats = [f.strip() for f in args.formats.split(',')]
+            cli.retry_failed_collection(args.failed_file_path, formats)
+        elif args.command == 'list-failed':
+            cli.list_failed_files()
     
     except KeyboardInterrupt:
         print("\n操作已取消")
